@@ -1,28 +1,29 @@
-name: Build & Deploy
+name: Build & Deploy (Self-Hosted Runner)
 
 on:
   push:
     branches: ["main"]
 
-# IMPORTANT: grant packages:write so the GITHUB_TOKEN can push to GHCR
+# Required so GITHUB_TOKEN can push to GHCR
 permissions:
   contents: read
   packages: write
 
 jobs:
   build-and-deploy:
+    # 👇 Use your self-hosted runner
     runs-on: self-hosted
 
     steps:
+      # --------------------------------------------------------
+      # 1. Checkout repository
+      # --------------------------------------------------------
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Sanity check build context (optional but helpful)
-        run: |
-          pwd
-          ls -la
-          find . -maxdepth 3 -type f -print | sort
-
+      # --------------------------------------------------------
+      # 2. Login to GHCR (GitHub Container Registry)
+      # --------------------------------------------------------
       - name: Login to GHCR
         uses: docker/login-action@v3
         with:
@@ -30,18 +31,20 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build & Push image
+      # --------------------------------------------------------
+      # 3. Build & Push Docker image (using runner’s Docker)
+      # --------------------------------------------------------
+      - name: Build & Push Docker Image
         run: |
           IMAGE=ghcr.io/${{ github.repository_owner }}/clmlab-site:latest
-          echo "Building and pushing $IMAGE"
+          echo "Building image: $IMAGE"
           docker build -t "$IMAGE" .
+          echo "Pushing image..."
           docker push "$IMAGE"
 
-      - name: Setup kubectl
-        uses: azure/setup-kubectl@v4
-        with:
-          version: 'latest'
-
+      # --------------------------------------------------------
+      # 4. Configure kubectl using KUBECONFIG secret
+      # --------------------------------------------------------
       - name: Configure kubeconfig
         env:
           KUBECONFIG_DATA: ${{ secrets.KUBECONFIG }}
@@ -49,12 +52,20 @@ jobs:
           mkdir -p ~/.kube
           echo "$KUBECONFIG_DATA" > ~/.kube/config
           chmod 600 ~/.kube/config
+          echo "Kubeconfig configured"
           kubectl config get-contexts
 
-      - name: Apply Deployment (rolling update)
+      # --------------------------------------------------------
+      # 5. Deploy updated image to Kubernetes
+      # --------------------------------------------------------
+      - name: Deploy to Kubernetes
         run: |
           IMAGE=ghcr.io/${{ github.repository_owner }}/clmlab-site:latest
-          kubectl set image deployment/webserver \
-            webserver="$IMAGE" \
-            -n webserver-tls
-          kubectl rollout status deployment/webserver -n webserver-tls
+          echo "Updating Deployment to image: $IMAGE"
+          kubectl -n webserver-tls set image deployment/webserver \
+            webserver="$IMAGE"
+          
+          echo "Waiting for rollout..."
+          kubectl -n webserver-tls rollout status deployment/webserver
+
+          echo "Deployment completed!"
